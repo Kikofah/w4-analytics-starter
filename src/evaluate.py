@@ -3,6 +3,7 @@
 ใช้งาน:
     python -m src.evaluate                      # ทุกไฟล์ out/pred_*.csv
     python -m src.evaluate out/pred_claude-opus-5-5.csv
+    python -m src.evaluate --dev                # ทุกไฟล์ out/dev_pred_*.csv เทียบกับ dev gold
 
 ผลลัพธ์: พิมพ์สรุปออกจอ และเขียน reports/model_comparison.md
 """
@@ -14,8 +15,10 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 GOLD = ROOT / "data" / "tickets_test_gold.csv"
+DEV_GOLD = ROOT / "data" / "tickets_dev_gold.csv"
 OUT_DIR = ROOT / "out"
 REPORT = ROOT / "reports" / "model_comparison.md"
+DEV_REPORT = ROOT / "reports" / "model_comparison_dev.md"
 
 FIELDS = ["category", "sentiment", "urgency", "order_id_mentioned", "contains_pii"]
 CATEGORIES = ["ส่งช้า", "สินค้าชำรุด", "ได้รับสินค้าผิด", "ขอคืนเงิน",
@@ -126,7 +129,7 @@ def evaluate(pred: pd.DataFrame, gold: pd.DataFrame, model: str | None = None) -
     merged = gold.merge(pred, on="ticket_id", how="inner", suffixes=("_gold", "_pred"))
     if merged.empty:
         raise ValueError(f"{model}: ไม่มีตั๋วใน gold ที่ตรงกับไฟล์ผลเลย "
-                         "ให้รัน python -m src.classify <model> --gold ก่อน")
+                         "ให้รัน python -m src.classify <model> --gold (หรือ --dev สำหรับชุด dev) ก่อน")
 
     has_error = _norm_str(merged["error"]) != "" if "error" in merged else pd.Series(False, index=merged.index)
 
@@ -178,11 +181,11 @@ def _md_table(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def build_comparison(results: list[ModelResult]) -> str:
+def build_comparison(results: list[ModelResult], gold_name: str = "data/tickets_test_gold.csv") -> str:
     lines = [
         "# เปรียบเทียบโมเดลจัดหมวดหมู่ตั๋ว",
         "",
-        f"ชุดทดสอบ: `data/tickets_test_gold.csv` ({results[0].n_gold} ใบ) · "
+        f"ชุดทดสอบ: `{gold_name}` ({results[0].n_gold} ใบ) · "
         "ตั๋วที่เรียก API ไม่สำเร็จนับเป็นตอบผิด",
         "",
         "## สรุป",
@@ -203,7 +206,7 @@ def build_comparison(results: list[ModelResult]) -> str:
     partial = [r.model for r in results if r.n_pred < r.n_gold]
     if partial:
         lines += ["", f"> ⚠️ ประเมินไม่ครบ {results[0].n_gold} ใบ: {', '.join(f'`{m}`' for m in partial)} "
-                      "ตัวเลขยังเทียบกันตรง ๆ ไม่ได้ ให้รัน `python -m src.classify <model> --gold`"]
+                      "ตัวเลขยังเทียบกันตรง ๆ ไม่ได้ ให้รัน `python -m src.classify <model> --gold` (ชุด dev ใช้ `--dev`)"]
     unpriced = [r.model for r in results if r.cost_per_1000_usd is None]
     if unpriced:
         lines += ["", f"> ไม่มีราคาของ {', '.join(f'`{m}`' for m in unpriced)} ใน `PRICES_PER_MTOK`"]
@@ -222,15 +225,21 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="ประเมินผลการจัดหมวดหมู่ตั๋วเทียบกับ gold")
     parser.add_argument("preds", nargs="*", type=Path,
                         help="ไฟล์ผล (ค่าเริ่มต้น: ทุกไฟล์ out/pred_*.csv)")
-    parser.add_argument("--gold", type=Path, default=GOLD)
-    parser.add_argument("-o", "--output", type=Path, default=REPORT)
+    parser.add_argument("--dev", action="store_true",
+                        help="ประเมินชุด dev: อ่าน out/dev_pred_*.csv เทียบ tickets_dev_gold.csv "
+                             "เขียน reports/model_comparison_dev.md")
+    parser.add_argument("--gold", type=Path)
+    parser.add_argument("-o", "--output", type=Path)
     args = parser.parse_args(argv)
 
-    paths = args.preds or sorted(OUT_DIR.glob("pred_*.csv"))
+    gold_path = args.gold or (DEV_GOLD if args.dev else GOLD)
+    output = args.output or (DEV_REPORT if args.dev else REPORT)
+    paths = args.preds or sorted(OUT_DIR.glob("dev_pred_*.csv" if args.dev else "pred_*.csv"))
     if not paths:
-        parser.exit(1, "ไม่พบไฟล์ out/pred_*.csv ให้รัน python -m src.classify <model> --gold ก่อน\n")
+        flag = "--dev" if args.dev else "--gold"
+        parser.exit(1, f"ไม่พบไฟล์ผลใน out/ ให้รัน python -m src.classify <model> {flag} ก่อน\n")
 
-    gold = load_gold(args.gold)
+    gold = load_gold(gold_path)
     results = []
     for p in paths:
         try:
@@ -246,9 +255,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if not results:
         parser.exit(1, "ไม่มีไฟล์ผลที่ประเมินได้\n")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(build_comparison(results), encoding="utf-8")
-    print(f"เขียนตารางเทียบแล้ว: {args.output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    gold_name = gold_path.relative_to(ROOT) if gold_path.is_relative_to(ROOT) else gold_path
+    output.write_text(build_comparison(results, str(gold_name)), encoding="utf-8")
+    print(f"เขียนตารางเทียบแล้ว: {output}")
 
 
 if __name__ == "__main__":

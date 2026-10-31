@@ -6,6 +6,8 @@
     python -m src.classify claude-opus-5-5 --limit 20
     python -m src.classify claude-opus-5-5 --all
     python -m src.classify claude-opus-5-5 --gold     # เฉพาะ 100 ใบใน gold (ใช้กับ src.evaluate)
+    python -m src.classify claude-opus-5-5 --dev      # ชุด dev 150 ใบ → out/dev_pred_<model>.csv
+                                                      # (ใช้ปรับ prompt ก่อนรันชุด test ครั้งเดียว)
 
 ผลลัพธ์: out/pred_<model>.csv หนึ่งแถวต่อตั๋ว พร้อม usage และเวลาที่ใช้ต่อใบ
 """
@@ -26,6 +28,7 @@ from src.mask_pii import EMAIL_TOKEN, PHONE_TOKEN, mask_dataframe
 ROOT = Path(__file__).resolve().parent.parent
 TICKETS = ROOT / "data" / "tickets.csv"
 GOLD = ROOT / "data" / "tickets_test_gold.csv"
+DEV_TICKETS = ROOT / "data" / "tickets_dev.csv"
 PROMPT = ROOT / "prompts" / "classify_v3.md"
 OUT_DIR = ROOT / "out"
 
@@ -116,10 +119,11 @@ def safe_model_name(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", model)
 
 
-def run(model: str, limit: int | None, effort: str | None = None, gold_only: bool = False) -> Path:
+def run(model: str, limit: int | None, effort: str | None = None, gold_only: bool = False,
+        dev: bool = False) -> Path:
     system = load_system_prompt()
     client = make_client()
-    tickets = pd.read_csv(TICKETS, encoding="utf-8-sig", dtype=str)
+    tickets = pd.read_csv(DEV_TICKETS if dev else TICKETS, encoding="utf-8-sig", dtype=str)
     if gold_only:
         gold_ids = pd.read_csv(GOLD, encoding="utf-8-sig", dtype=str)["ticket_id"]
         tickets = tickets[tickets["ticket_id"].isin(gold_ids)]
@@ -134,7 +138,9 @@ def run(model: str, limit: int | None, effort: str | None = None, gold_only: boo
                  "ไม่ส่งเข้า API ให้ตรวจ src/mask_pii.py ก่อน")
 
     OUT_DIR.mkdir(exist_ok=True)
-    out_path = OUT_DIR / f"pred_{safe_model_name(model)}.csv"
+    # ผล dev แยกชื่อไฟล์ ไม่ให้ปนกับผลชุด test ที่ src.evaluate อ่านเป็นค่าเริ่มต้น
+    prefix = "dev_pred" if dev else "pred"
+    out_path = OUT_DIR / f"{prefix}_{safe_model_name(model)}.csv"
 
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=OUT_COLUMNS)
@@ -172,16 +178,25 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="จัดหมวดหมู่ตั๋วร้องเรียนด้วย Claude API")
     parser.add_argument("model", help="ชื่อโมเดล เช่น claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--limit", type=int, default=5, help="จำนวนตั๋วจากด้านบน (ค่าเริ่มต้น 5)")
+    group.add_argument("--limit", type=int, help="จำนวนตั๋วจากด้านบน (ค่าเริ่มต้น 5 · กับ --dev ค่าเริ่มต้นคือทุกใบ)")
     group.add_argument("--all", action="store_true", help="รันทุกใบ")
     group.add_argument("--gold", action="store_true",
                        help="รันเฉพาะ 100 ใบที่อยู่ใน tickets_test_gold.csv (สำหรับ src.evaluate)")
+    parser.add_argument("--dev", action="store_true",
+                        help="ใช้ data/tickets_dev.csv (150 ใบ) แทน tickets.csv เขียนผลลง out/dev_pred_<model>.csv")
     parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
                         help="ระดับ effort (ไม่ใส่ = ค่าเริ่มต้นของโมเดล)")
     args = parser.parse_args(argv)
 
-    limit = None if (args.all or args.gold) else args.limit
-    out = run(args.model, limit, args.effort, gold_only=args.gold)
+    if args.dev and args.gold:
+        parser.error("--gold ใช้กับชุด test เท่านั้น ใช้ร่วมกับ --dev ไม่ได้")
+    if args.all or args.gold:
+        limit = None
+    elif args.limit is not None:
+        limit = args.limit
+    else:
+        limit = None if args.dev else 5
+    out = run(args.model, limit, args.effort, gold_only=args.gold, dev=args.dev)
     print(f"เขียนผลแล้ว: {out}")
 
 

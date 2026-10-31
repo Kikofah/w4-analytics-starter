@@ -78,3 +78,26 @@ def test_comparison_markdown(gold, pred):
     assert "`claude-haiku-5-5`" in md
     assert "recall urgency=สูง" in md
     assert "Confusion matrix" in md
+
+
+def test_dev_files_present_and_aligned():
+    """ชุด dev ที่ classify --dev และ evaluate --dev ใช้ ต้องมี ticket_id ตรงกันครบ"""
+    from src import classify
+    tickets = pd.read_csv(classify.DEV_TICKETS, encoding="utf-8-sig", dtype=str)
+    gold = ev.load_gold(ev.DEV_GOLD)
+    assert len(tickets) == len(gold) == 150
+    assert set(tickets["ticket_id"]) == set(gold["ticket_id"])
+
+
+def test_cli_dev_reads_dev_preds_only(tmp_path, monkeypatch, gold, pred):
+    """--dev อ่านเฉพาะ out/dev_pred_*.csv และเขียนรายงาน dev แยกไฟล์"""
+    monkeypatch.setattr(ev, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(ev, "DEV_GOLD", tmp_path / "dev_gold.csv")
+    gold.to_csv(tmp_path / "dev_gold.csv", index=False, encoding="utf-8-sig")
+    pred.to_csv(tmp_path / "dev_pred_claude-haiku-5-5.csv", index=False, encoding="utf-8-sig")
+    pred.assign(ticket_id=["X1", "X2", "X3", "X4"]).to_csv(
+        tmp_path / "pred_claude-haiku-5-5.csv", index=False, encoding="utf-8-sig")   # ผล test ห้ามถูกอ่าน
+    out = tmp_path / "cmp_dev.md"
+    ev.main(["--dev", "-o", str(out)])
+    md = out.read_text(encoding="utf-8")
+    assert "dev_gold.csv" in md and "4/4" in md
