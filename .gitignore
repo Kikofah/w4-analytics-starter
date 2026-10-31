@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+out/
+.env
+dist/
+data/tickets_masked.csv
+.DS_Store
